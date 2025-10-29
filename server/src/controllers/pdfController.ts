@@ -3,8 +3,7 @@ import { PdfService } from '../services/pdfService';
 import { UserService } from '../services/userService';
 import { AdvantageService } from '../services/advantageService';
 import { DataCacheService } from '../services/dataCacheService';
-import path from 'path';
-import fs from 'fs';
+// No local disk storage for uploads/excels anymore
 
 export class PdfController {
   private static sanitizeFileName(input?: string) {
@@ -58,9 +57,10 @@ export class PdfController {
         });
       }
 
-      const filePath = req.file.path;
-      const userInfo = await PdfService.extractUserInfoFromPdf(filePath);
-      const extractedData = await PdfService.extractRubricasFromPdf(filePath);
+      // With memory storage, multer places the file buffer at req.file.buffer
+      const fileBuffer: Buffer = (req.file as any).buffer;
+      const userInfo = await PdfService.extractUserInfoFromPdf(fileBuffer);
+      const extractedData = await PdfService.extractRubricasFromPdf(fileBuffer);
 
       const defaults = { name: 'NÃO INFORMADO', cpf: '', cargo: 'NÃO INFORMADO', matricula: 'NÃO INFORMADO' };
       const u = userInfo ? { ...defaults, ...userInfo } : defaults;
@@ -118,16 +118,7 @@ export class PdfController {
         const baseName = PdfController.sanitizeFileName(u.name) || u.cpf || `extracted-${Date.now()}`;
         const fileName = `${baseName}.xlsx`;
 
-        // Ensure excels directory exists and save file so later downloads by filename work
-        try {
-          const excelsDir = path.join(__dirname, '../../excels');
-          if (!fs.existsSync(excelsDir)) fs.mkdirSync(excelsDir, { recursive: true });
-          const outPath = path.join(excelsDir, fileName);
-          fs.writeFileSync(outPath, buffer);
-        } catch (saveErr) {
-          console.error('Failed to save generated Excel to disk:', saveErr);
-        }
-
+        // Do NOT persist Excel to disk. Return as attachment directly.
         res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         return res.send(buffer);
@@ -203,8 +194,9 @@ export class PdfController {
       // Processar cada PDF
       for (const file of files) {
         try {
-          const userInfo = await PdfService.extractUserInfoFromPdf(file.path);
-          const extractedData = await PdfService.extractRubricasFromPdf(file.path);
+          const buf: Buffer = file.buffer;
+          const userInfo = await PdfService.extractUserInfoFromPdf(buf);
+          const extractedData = await PdfService.extractRubricasFromPdf(buf);
           allData.push(...extractedData); // Spread porque extractRubricasFromPdf retorna array
           // Cachear dados por usuário detectado neste PDF
           try {
@@ -245,8 +237,7 @@ export class PdfController {
           //   }
           // }
           
-          // Deletar o PDF original
-          PdfService.deleteFile(file.path);
+          // No-memory storage: nothing to delete from disk
         } catch (error) {
           console.error(`Erro ao processar ${file.originalname}:`, error);
         }
@@ -331,24 +322,9 @@ export class PdfController {
    */
   static async downloadExcel(req: Request, res: Response, next: NextFunction) {
     try {
-      const fileName = req.params.fileName;
-      const filePath = path.join(__dirname, '../../excels', fileName);
-
-      if (!fs.existsSync(filePath)) {
-        return res.status(404).json({
-          success: false,
-          message: 'Arquivo não encontrado'
-        });
-      }
-
-      res.download(filePath, fileName, (err: any) => {
-        if (err) {
-          next(err);
-        } else {
-          // Não deletar mais automaticamente para permitir visualização
-          // O usuário pode abrir o arquivo Excel diretamente da pasta "excels"
-        }
-      });
+      // Files are not persisted on the server anymore.
+      // Instruct the client to use the on-demand generate endpoint instead.
+      res.status(410).json({ success: false, message: 'Arquivos Excel não são mais armazenados no servidor. Use /api/pdf/generate/:cpf para gerar o arquivo sob demanda.' });
     } catch (error) {
       next(error);
     }
@@ -359,29 +335,8 @@ export class PdfController {
    */
   static async listFiles(req: Request, res: Response, next: NextFunction) {
     try {
-      const excelsDir = path.join(__dirname, '../../excels');
-      
-      if (!fs.existsSync(excelsDir)) {
-        return res.json({
-          success: true,
-          data: []
-        });
-      }
-
-      const files = fs.readdirSync(excelsDir)
-        .filter(file => file.endsWith('.xlsx'))
-        .map(file => ({
-          name: file,
-          downloadUrl: `/api/pdf/download/${file}`,
-          fullPath: path.join(excelsDir, file),
-          createdAt: fs.statSync(path.join(excelsDir, file)).mtime
-        }));
-
-      res.json({
-        success: true,
-        data: files,
-        message: `Os arquivos Excel estão salvos em: ${excelsDir}`
-      });
+      // The server does not persist Excel files anymore.
+      res.json({ success: true, data: [], message: 'Nenhum arquivo Excel persistido no servidor. Utilize /api/pdf/generate/:cpf para obter o arquivo.' });
     } catch (error) {
       next(error);
     }
@@ -399,8 +354,8 @@ export class PdfController {
         });
       }
 
-      const filePath = req.file.path;
-      const years = await PdfService.extractYearsFromPdf(filePath);
+      const fileBuffer: Buffer = (req.file as any).buffer;
+      const years = await PdfService.extractYearsFromPdf(fileBuffer);
 
       res.status(200).json({ success: true, data: years });
     } catch (error) {
