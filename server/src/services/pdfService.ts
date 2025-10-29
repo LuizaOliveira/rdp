@@ -69,15 +69,15 @@ export class PdfService {
   /**
    * Extrai informações do usuário (nome, CPF, cargo, matrícula) a partir do PDF
    */
-  static async extractUserInfoFromPdf(filePath: string): Promise<{
+  static async extractUserInfoFromPdf(file: string | Buffer): Promise<{
     name: string;
     cpf: string;
     cargo: string;
     matricula: string;
   } | null> {
     try {
-      const dataBuffer = fs.readFileSync(filePath);
-      const data = await pdf(dataBuffer);
+      const dataBuffer = typeof file === 'string' ? fs.readFileSync(file) : file;
+      const data = await pdf(dataBuffer as Buffer);
       const text = data.text;
       const lines = text
         .split("\n")
@@ -290,12 +290,10 @@ export class PdfService {
    * Extrai dados do PDF para rubricas
    * Agora com detecção muito mais robusta
    */
-  static async extractRubricasFromPdf(
-    filePath: string
-  ): Promise<RubricaData[]> {
+  static async extractRubricasFromPdf(file: string | Buffer): Promise<RubricaData[]> {
     try {
-      const dataBuffer = fs.readFileSync(filePath);
-      const data = await pdf(dataBuffer);
+      const dataBuffer = typeof file === 'string' ? fs.readFileSync(file) : file;
+      const data = await pdf(dataBuffer as Buffer);
       const text = data.text;
 
       console.log("📄 ==== TEXTO COMPLETO DO PDF ====");
@@ -460,338 +458,223 @@ export class PdfService {
    * Colunas fixas baseadas no mapeamento de rubricas
    * Primeira linha de cada ano destacada em cinza
    */
-  static async convertRubricasToExcel(
-    data: RubricaData[],
-    outputPath: string
-  ): Promise<string> {
-    try {
-      const workbook = new ExcelJS.Workbook();
-      const worksheet = workbook.addWorksheet("Resumo por Mês");
+  private static async buildWorkbookFromData(data: RubricaData[]): Promise<ExcelJS.Workbook> {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("Resumo por Mês");
 
-      console.log("📊 ==== CONSOLIDANDO DADOS ====");
+    console.log("📊 ==== CONSOLIDANDO DADOS ====");
 
-      // Agrupar por mês/ano (linha), e dentro por rubrica, e dentro por mesAnoDir (quando houver), somando valores
-      type Agregado = {
-        total: number;
-        count: number;
-        dir?: string;
-        itens: number[];
-      };
-      const agrupado: Record<
-        string,
-        Record<string, Map<string, Agregado>>
-      > = {};
+    // The body of the previous convertRubricasToExcel implementation is reused here.
+    // Grouping and mapping logic (identical to the previous implementation) follows.
 
-      console.log(
-        "\n📋 ==== MAPEANDO E AGRUPANDO RUBRICAS (por mês de referência) ====\n"
-      );
+    type Agregado = {
+      total: number;
+      count: number;
+      dir?: string;
+      itens: number[];
+    };
+    const agrupado: Record<string, Record<string, Map<string, Agregado>>> = {};
 
-      data.forEach((item) => {
-        const mesPagamento = item.mesAno; // mês em que caiu
-        const mesReferencia =
-          item.mesAnoDir && item.mesAnoDir !== mesPagamento
-            ? item.mesAnoDir
-            : mesPagamento; // mês a que pertence
-        const rubricaMapeada = this.mapearRubrica(item.descricaoRubrica);
-        const valor = item.valor;
+    data.forEach((item) => {
+      const mesPagamento = item.mesAno;
+      const mesReferencia = item.mesAnoDir && item.mesAnoDir !== mesPagamento ? item.mesAnoDir : mesPagamento;
+      const rubricaMapeada = this.mapearRubrica(item.descricaoRubrica);
+      const valor = item.valor;
+      const pagoKey = mesPagamento !== mesReferencia ? mesPagamento : "__ON_TIME__";
 
-        // Dentro do mês de referência, agrupamos por rubrica e por mês de pagamento (pagoEm)
-        const pagoKey =
-          mesPagamento !== mesReferencia ? mesPagamento : "__ON_TIME__";
+      if (!agrupado[mesReferencia]) agrupado[mesReferencia] = {};
+      if (!agrupado[mesReferencia][rubricaMapeada]) agrupado[mesReferencia][rubricaMapeada] = new Map();
 
-        if (!agrupado[mesReferencia]) agrupado[mesReferencia] = {};
-        if (!agrupado[mesReferencia][rubricaMapeada])
-          agrupado[mesReferencia][rubricaMapeada] = new Map();
-
-        const mapa = agrupado[mesReferencia][rubricaMapeada];
-        const existente = mapa.get(pagoKey);
-        if (existente) {
-          existente.total += valor;
-          existente.count += 1;
-          existente.itens.push(valor);
-        } else {
-          mapa.set(pagoKey, {
-            total: valor,
-            count: 1,
-            dir: pagoKey === "__ON_TIME__" ? undefined : mesPagamento,
-            itens: [valor],
-          });
-        }
-      });
-
-      // Converter para array e ordenar por ano/mês
-      const mesesData: MesAnoData[] = [];
-      Object.entries(agrupado).forEach(([mesRef, rubricas]) => {
-        const match = mesRef.match(/(\d{2})\/(\d{4})/);
-        if (match) {
-          const mes = parseInt(match[1]);
-          const ano = parseInt(match[2]);
-          // Para compatibilidade com tipo MesAnoData (rubricas: Record<string, number>),
-          // vamos apenas marcar presença das rubricas; o conteúdo real será renderizado via richText adiante
-          const rubricasMarcadores: Record<string, number> = {};
-          Object.keys(rubricas).forEach((r) => (rubricasMarcadores[r] = 1));
-
-          mesesData.push({
-            mesAno: this.formatarMesAno(mesRef),
-            ano: ano,
-            mes: mes,
-            rubricas: rubricasMarcadores,
-          });
-        }
-      });
-
-      // Ordenar por ano e mês
-      mesesData.sort((a, b) => {
-        if (a.ano !== b.ano) return a.ano - b.ano;
-        return a.mes - b.mes;
-      });
-
-      // Descobrir todas as rubricas únicas que têm dados (colunas dinâmicas)
-      const rubricasComDados = new Set<string>();
-      mesesData.forEach((mesData) => {
-        Object.keys(mesData.rubricas).forEach((rubrica) => {
-          rubricasComDados.add(rubrica);
-        });
-      });
-
-      // Ordenar rubricas por ordem de importância
-      const ordemPreferencial = [
-        "VENC. BASE",
-        "ADTS",
-        "FUNÇÃO GRATIFICADA",
-        "INSALUBRIDADE",
-        "GRATIF. JORNADA ESPECIAL",
-        "ADD NOTURNO",
-        "ADICIONAL DE FÉRIAS",
-        "GRATIFICAÇÃO NATALINA",
-        "ADIANTAMENTO GRATIFICAÇÃO NATALINA",
-        "TOTAL VANTAGENS",
-        "IPE",
-        "IRRF",
-        "IRRF 13º",
-        "TOTAL DESCONTOS",
-        "TOTAL LÍQUIDO",
-      ];
-
-      const rubricasOrdenadas = Array.from(rubricasComDados).sort((a, b) => {
-        const indexA = ordemPreferencial.indexOf(a);
-        const indexB = ordemPreferencial.indexOf(b);
-
-        if (indexA !== -1 && indexB !== -1) return indexA - indexB;
-        if (indexA !== -1) return -1;
-        if (indexB !== -1) return 1;
-        return a.localeCompare(b);
-      });
-
-  // Adiciona a coluna de desconto previdenciário
-  const colunasExcel = ["MÊS / ANO", ...rubricasOrdenadas, "Desconto Previdência"];
-
-      console.log(`\n📅 Meses encontrados: ${mesesData.length}`);
-      console.log(`📋 Colunas com dados: ${rubricasOrdenadas.join(", ")}\n`);
-
-      // Definir colunas dinamicamente
-      worksheet.columns = colunasExcel.map((col: string) => ({
-        header: col,
-        key: col,
-        width: col === "MÊS / ANO" ? 12 : Math.max(col.length + 2, 15),
-      }));
-
-      // Estilizar cabeçalho
-      worksheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-      worksheet.getRow(1).fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FF4472C4" },
-      };
-      worksheet.getRow(1).alignment = {
-        vertical: "middle",
-        horizontal: "center",
-      };
-
-      // Preencher linhas (uma por mês)
-      let anoAnterior = -1;
-
-      // Função para buscar faixa de alíquota pelo valor e ano
-      const tabelas = [
-        {
-          2025: [
-            {
-              "Alíquota 1": { De: null, Ate: 4679.67, percentual: 0.11, deduzir: null },
-              "Alíquota 2": { De: 4679.68, Ate: 8157.41, percentual: 0.14, deduzir: 140.39 },
-              "Alíquota 3": { De: 8157.42, Ate: 20055.73, percentual: 0.15, deduzir: 221.96 },
-              "Alíquota 4": { De: 20055.74, Ate: 40111.45, percentual: 0.16, deduzir: 422.52 },
-              "Alíquota 5": { De: 40111.46, Ate: null, percentual: 0.18, deduzir: 1224.75 },
-            },
-          ],
-          2024: [
-            {
-              "Alíquota 1": { De: null, Ate: 4466.61, percentual: 0.11, deduzir: null },
-              "Alíquota 2": { De: 4466.62, Ate: 7786.02, percentual: 0.14, deduzir: 134.00 },
-              "Alíquota 3": { De: 7786.03, Ate: 19142.63, percentual: 0.15, deduzir:211.86 },
-              "Alíquota 4": { De: 19142.64, Ate: 38285.24, percentual: 0.16, deduzir: 403.28 },
-              "Alíquota 5": { De: 38285.25, Ate: null, percentual: 0.18, deduzir: 1168.99 },
-            },
-          ],
-          2023: [
-            {
-              "Alíquota 1": { De: null, Ate: 4306.83, percentual: 0.11, deduzir: null },
-              "Alíquota 2": { De: 4306.84, Ate: 7507.49, percentual: 0.14, deduzir: 129.20 },
-              "Alíquota 3": { De: 7507.50, Ate: 18457.84, percentual: 0.15, deduzir: 204.28 },
-              "Alíquota 4": { De: 18457.85, Ate: 36915.67, percentual: 0.16, deduzir: 388.86 },
-              "Alíquota 5": { De: 36915.68, Ate: null, percentual: 0.18, deduzir: 1127.17 },
-            },
-          ],
-           2022: [
-            {
-              "Alíquota 1": { De: null, Ate: 4065.73, percentual: 0.11, deduzir: null },
-              "Alíquota 2": { De: 4065.74, Ate: 7087.22, percentual: 0.14, deduzir: 121.97 },
-              "Alíquota 3": { De: 7087.23, Ate: 17424.56, percentual: 0.15, deduzir: 192.84 },
-              "Alíquota 4": { De: 17424.57, Ate: 34849.12, percentual: 0.16, deduzir: 367.09 },
-              "Alíquota 5": { De: 34849.13, Ate: null, percentual: 0.18, deduzir: 1064.07 },
-            },
-          ],
-           2021: [
-            {
-              "Alíquota 1": { De: null, Ate: 3690.75, percentual: 0.11, deduzir: null },
-              "Alíquota 2": { De: 3690.76, Ate: 6433.57, percentual: 0.14, deduzir: 110.72 },
-              "Alíquota 3": { De: 6433.58, Ate: 15817.50, percentual: 0.15, deduzir: 175.06 },
-              "Alíquota 4": { De: 15817.51, Ate: 31635.00, percentual: 0.16, deduzir: 333.23 },
-              "Alíquota 5": { De: 31635.01, Ate: null, percentual: 0.18, deduzir: 965.93 },
-            },
-          ],
-        },
-      ];
-      function getAliquotaFaixa(valor: number, ano: string) {
-        // Procura o objeto que tem a chave do ano desejado
-  const anoNum = Number(ano);
-  const tabelaAno = tabelas.find((t) => t[anoNum]);
-  if (!tabelaAno) return null;
-  const faixas = tabelaAno[anoNum][0];
-        for (const key in faixas) {
-          const faixa = faixas[key];
-          if ((faixa.De === null || valor >= faixa.De) && (faixa.Ate === null || valor <= faixa.Ate)) {
-            return faixa;
-          }
-        }
-        return null;
+      const mapa = agrupado[mesReferencia][rubricaMapeada];
+      const existente = mapa.get(pagoKey);
+      if (existente) {
+        existente.total += valor;
+        existente.count += 1;
+        existente.itens.push(valor);
+      } else {
+        mapa.set(pagoKey, { total: valor, count: 1, dir: pagoKey === "__ON_TIME__" ? undefined : mesPagamento, itens: [valor] });
       }
+    });
 
-      mesesData.forEach((mesData) => {
-        const row: Record<string, any> = { "MÊS / ANO": mesData.mesAno };
-        // Inicializa vazio; depois aplicamos richText célula a célula
-        rubricasOrdenadas.forEach((coluna: string) => {
-          row[coluna] = "";
-        });
-        row["Desconto Previdência"] = "";
+    const mesesData: MesAnoData[] = [];
+    Object.entries(agrupado).forEach(([mesRef, rubricas]) => {
+      const match = mesRef.match(/(\d{2})\/(\d{4})/);
+      if (match) {
+        const mes = parseInt(match[1]);
+        const ano = parseInt(match[2]);
+        const rubricasMarcadores: Record<string, number> = {};
+        Object.keys(rubricas).forEach((r) => (rubricasMarcadores[r] = 1));
+        mesesData.push({ mesAno: this.formatarMesAno(mesRef), ano, mes, rubricas: rubricasMarcadores });
+      }
+    });
 
-        const excelRow = worksheet.addRow(row);
+    mesesData.sort((a, b) => (a.ano !== b.ano ? a.ano - b.ano : a.mes - b.mes));
 
-        // Para cada rubrica, montar linhas agregadas por mesAnoDir (se houver) com quebras de linha
-        rubricasOrdenadas.forEach((coluna: string, idx: number) => {
-          const cell = excelRow.getCell(idx + 2); // +2 porque a coluna 1 é MÊS / ANO
-          const mesOriginal = mesData.mesAno; // já está formatado (ex: jan/20)
+    const rubricasComDados = new Set<string>();
+    mesesData.forEach((mesData) => Object.keys(mesData.rubricas).forEach((r) => rubricasComDados.add(r)));
 
-          // Reconstruir a chave mesAno no formato MM/YYYY a partir do texto formatado
-          // Para localizar no mapa 'agrupado'. Vamos manter um mapeamento auxiliar.
-          // Em vez disso, percorrer todas as chaves e comparar pelo formatarMesAno
-          const entradaDoMes = Object.entries(agrupado).find(
-            ([k]) => this.formatarMesAno(k) === mesOriginal
-          );
-          if (!entradaDoMes) {
-            cell.value = "";
-            return;
-          }
-          const [, mapaRubricas] = entradaDoMes;
-          const mapaDir = mapaRubricas[coluna];
-          if (!mapaDir) {
-            cell.value = "";
-            return;
-          }
+    const ordemPreferencial = [
+      "VENC. BASE",
+      "ADTS",
+      "FUNÇÃO GRATIFICADA",
+      "INSALUBRIDADE",
+      "GRATIF. JORNADA ESPECIAL",
+      "ADD NOTURNO",
+      "ADICIONAL DE FÉRIAS",
+      "GRATIFICAÇÃO NATALINA",
+      "ADIANTAMENTO GRATIFICAÇÃO NATALINA",
+      "TOTAL VANTAGENS",
+      "IPE",
+      "IRRF",
+      "IRRF 13º",
+      "TOTAL DESCONTOS",
+      "TOTAL LÍQUIDO",
+    ];
 
-          // Consolidar todos os pagos (incluindo atrasados) em um único total
-          let totalGeral = 0;
-          Array.from(mapaDir.values()).forEach((ag) => {
-            totalGeral += ag.total;
-          });
-          const totalFmt = totalGeral.toFixed(2).replace('.', ',');
-          cell.value = totalFmt;
-          cell.alignment = { vertical: 'middle' };
-        });
+    const rubricasOrdenadas = Array.from(rubricasComDados).sort((a, b) => {
+      const indexA = ordemPreferencial.indexOf(a);
+      const indexB = ordemPreferencial.indexOf(b);
+      if (indexA !== -1 && indexB !== -1) return indexA - indexB;
+      if (indexA !== -1) return -1;
+      if (indexB !== -1) return 1;
+      return a.localeCompare(b);
+    });
 
-        // Calcular e preencher Desconto Previdência
-        // Soma todas as vantagens do mês
-        const entradaDoMes = Object.entries(agrupado).find(
-          ([k]) => this.formatarMesAno(k) === mesData.mesAno
-        );
-        let totalVantagens = 0;
-        if (entradaDoMes) {
-          const [, mapaRubricas] = entradaDoMes;
-          // Soma todas as vantagens exceto 'ADICIONAL DE FÉRIAS'
-          Object.entries(mapaRubricas).forEach(([rubrica, mapaDir]) => {
-            if ([
-              "VENC. BASE",
-              "ADTS",
-              "FUNÇÃO GRATIFICADA",
-              "INSALUBRIDADE",
-              "GRATIF. JORNADA ESPECIAL",
-              "ADD NOTURNO",
-              "GRATIFICAÇÃO NATALINA",
-              "ADIANTAMENTO GRATIFICAÇÃO NATALINA"
-            ].includes(rubrica)) {
-              Array.from(mapaDir.values()).forEach((ag) => {
-                totalVantagens += ag.total;
-              });
-            }
-          });
+    const colunasExcel = ["MÊS / ANO", ...rubricasOrdenadas, "Desconto Previdência"];
+    worksheet.columns = colunasExcel.map((col: string) => ({ header: col, key: col, width: col === "MÊS / ANO" ? 12 : Math.max(col.length + 2, 15) }));
+    worksheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    worksheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF4472C4" } };
+    worksheet.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
+
+    let anoAnterior = -1;
+
+    const tabelas = [
+      {
+        2025: [
+          {
+            "Alíquota 1": { De: null, Ate: 4679.67, percentual: 0.11, deduzir: null },
+            "Alíquota 2": { De: 4679.68, Ate: 8157.41, percentual: 0.14, deduzir: 140.39 },
+            "Alíquota 3": { De: 8157.42, Ate: 20055.73, percentual: 0.15, deduzir: 221.96 },
+            "Alíquota 4": { De: 20055.74, Ate: 40111.45, percentual: 0.16, deduzir: 422.52 },
+            "Alíquota 5": { De: 40111.46, Ate: null, percentual: 0.18, deduzir: 1224.75 },
+          },
+        ],
+        2024: [
+          {
+            "Alíquota 1": { De: null, Ate: 4466.61, percentual: 0.11, deduzir: null },
+            "Alíquota 2": { De: 4466.62, Ate: 7786.02, percentual: 0.14, deduzir: 134.00 },
+            "Alíquota 3": { De: 7786.03, Ate: 19142.63, percentual: 0.15, deduzir:211.86 },
+            "Alíquota 4": { De: 19142.64, Ate: 38285.24, percentual: 0.16, deduzir: 403.28 },
+            "Alíquota 5": { De: 38285.25, Ate: null, percentual: 0.18, deduzir: 1168.99 },
+          },
+        ],
+        2023: [
+          {
+            "Alíquota 1": { De: null, Ate: 4306.83, percentual: 0.11, deduzir: null },
+            "Alíquota 2": { De: 4306.84, Ate: 7507.49, percentual: 0.14, deduzir: 129.20 },
+            "Alíquota 3": { De: 7507.50, Ate: 18457.84, percentual: 0.15, deduzir: 204.28 },
+            "Alíquota 4": { De: 18457.85, Ate: 36915.67, percentual: 0.16, deduzir: 388.86 },
+            "Alíquota 5": { De: 36915.68, Ate: null, percentual: 0.18, deduzir: 1127.17 },
+          },
+        ],
+         2022: [
+          {
+            "Alíquota 1": { De: null, Ate: 4065.73, percentual: 0.11, deduzir: null },
+            "Alíquota 2": { De: 4065.74, Ate: 7087.22, percentual: 0.14, deduzir: 121.97 },
+            "Alíquota 3": { De: 7087.23, Ate: 17424.56, percentual: 0.15, deduzir: 192.84 },
+            "Alíquota 4": { De: 17424.57, Ate: 34849.12, percentual: 0.16, deduzir: 367.09 },
+            "Alíquota 5": { De: 34849.13, Ate: null, percentual: 0.18, deduzir: 1064.07 },
+          },
+        ],
+         2021: [
+          {
+            "Alíquota 1": { De: null, Ate: 3690.75, percentual: 0.11, deduzir: null },
+            "Alíquota 2": { De: 3690.76, Ate: 6433.57, percentual: 0.14, deduzir: 110.72 },
+            "Alíquota 3": { De: 6433.58, Ate: 15817.50, percentual: 0.15, deduzir: 175.06 },
+            "Alíquota 4": { De: 15817.51, Ate: 31635.00, percentual: 0.16, deduzir: 333.23 },
+            "Alíquota 5": { De: 31635.01, Ate: null, percentual: 0.18, deduzir: 965.93 },
+          },
+        ],
+      },
+    ];
+    function getAliquotaFaixa(valor: number, ano: string) {
+      const anoNum = Number(ano);
+      const tabelaAno = (tabelas as any).find((t: any) => t[anoNum]);
+      if (!tabelaAno) return null;
+      const faixas = (tabelaAno as any)[anoNum][0];
+      for (const key in faixas) {
+        const faixa = faixas[key];
+        if ((faixa.De === null || valor >= faixa.De) && (faixa.Ate === null || valor <= faixa.Ate)) {
+          return faixa;
         }
-        // Descobre o ano (ex: jan/2025 -> 2025)
-        const anoMatch = mesData.mesAno.match(/\/(\d{2})$/);
-        let ano = "2025";
-        if (anoMatch) {
-          ano = "20" + anoMatch[1];
-        }
-        const faixa = getAliquotaFaixa(totalVantagens, ano);
-        let desconto = 0;
-        if (faixa && typeof faixa.percentual === "number") {
-          desconto = totalVantagens * faixa.percentual;
-          if (faixa.deduzir) desconto -= faixa.deduzir;
-        }
-        const descontoFmt = desconto ? desconto.toFixed(2).replace('.', ',') : "";
-        const cellDesc = excelRow.getCell(colunasExcel.length);
-        cellDesc.value = descontoFmt;
-        cellDesc.alignment = { vertical: 'middle' };
+      }
+      return null;
+    }
 
-        // Destacar primeira linha de cada ano com fundo cinza
-        if (mesData.ano !== anoAnterior) {
-          excelRow.fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: "FFD3D3D3" }, // Cinza claro
-          };
-          excelRow.font = { bold: true };
-          anoAnterior = mesData.ano;
-        }
+    mesesData.forEach((mesData) => {
+      const row: Record<string, any> = { "MÊS / ANO": mesData.mesAno };
+      rubricasOrdenadas.forEach((coluna: string) => { row[coluna] = ""; });
+      row["Desconto Previdência"] = "";
+
+      const excelRow = worksheet.addRow(row);
+
+      rubricasOrdenadas.forEach((coluna: string, idx: number) => {
+        const cell = excelRow.getCell(idx + 2);
+        const mesOriginal = mesData.mesAno;
+        const entradaDoMes = Object.entries(agrupado).find(([k]) => this.formatarMesAno(k) === mesOriginal);
+        if (!entradaDoMes) { cell.value = ""; return; }
+        const [, mapaRubricas] = entradaDoMes;
+        const mapaDir = mapaRubricas[coluna];
+        if (!mapaDir) { cell.value = ""; return; }
+        let totalGeral = 0;
+        Array.from(mapaDir.values()).forEach((ag) => { totalGeral += ag.total; });
+        const totalFmt = totalGeral.toFixed(2).replace('.', ',');
+        cell.value = totalFmt;
+        cell.alignment = { vertical: 'middle' };
       });
 
-      // Adicionar bordas
-      worksheet.eachRow((row) => {
-        row.eachCell((cell) => {
-          cell.border = {
-            top: { style: "thin" },
-            left: { style: "thin" },
-            bottom: { style: "thin" },
-            right: { style: "thin" },
-          };
+      const entradaDoMes2 = Object.entries(agrupado).find(([k]) => this.formatarMesAno(k) === mesData.mesAno);
+      let totalVantagens = 0;
+      if (entradaDoMes2) {
+        const [, mapaRubricas] = entradaDoMes2;
+        Object.entries(mapaRubricas).forEach(([rubrica, mapaDir]) => {
+          if (["VENC. BASE","ADTS","FUNÇÃO GRATIFICADA","INSALUBRIDADE","GRATIF. JORNADA ESPECIAL","ADD NOTURNO","GRATIFICAÇÃO NATALINA","ADIANTAMENTO GRATIFICAÇÃO NATALINA"].includes(rubrica)) {
+            Array.from(mapaDir.values()).forEach((ag) => { totalVantagens += ag.total; });
+          }
         });
-      });
+      }
+      const anoMatch = mesData.mesAno.match(/\/(\d{2})$/);
+      let ano = "2025";
+      if (anoMatch) ano = "20" + anoMatch[1];
+      const faixa = getAliquotaFaixa(totalVantagens, ano);
+      let desconto = 0;
+      if (faixa && typeof faixa.percentual === "number") {
+        desconto = totalVantagens * faixa.percentual;
+        if (faixa.deduzir) desconto -= faixa.deduzir;
+      }
+      const descontoFmt = desconto ? desconto.toFixed(2).replace('.', ',') : "";
+      const cellDesc = excelRow.getCell(colunasExcel.length);
+      cellDesc.value = descontoFmt;
+      cellDesc.alignment = { vertical: 'middle' };
 
-      // Congelar primeira linha e primeira coluna
-      worksheet.views = [{ state: "frozen", xSplit: 1, ySplit: 1 }];
+      if (mesData.ano !== anoAnterior) {
+        excelRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD3D3D3" } };
+        excelRow.font = { bold: true };
+        anoAnterior = mesData.ano;
+      }
+    });
 
+    worksheet.eachRow((row) => { row.eachCell((cell) => { cell.border = { top: { style: "thin" }, left: { style: "thin" }, bottom: { style: "thin" }, right: { style: "thin" } }; }); });
+    worksheet.views = [{ state: "frozen", xSplit: 1, ySplit: 1 }];
+
+    return workbook;
+  }
+
+  static async convertRubricasToExcel(data: RubricaData[], outputPath: string): Promise<string> {
+    try {
+      const workbook = await this.buildWorkbookFromData(data);
       await workbook.xlsx.writeFile(outputPath);
-
       console.log(`✅ Excel gerado com sucesso em: ${outputPath}\n`);
-
       return outputPath;
     } catch (error) {
       throw new Error(`Erro ao criar Excel: ${error}`);
@@ -801,21 +684,10 @@ export class PdfService {
   /**
    * Gera o mesmo Excel, porém retorna um Buffer em memória (sem salvar em disco)
    */
-  static async convertRubricasToExcelBuffer(
-    data: RubricaData[]
-  ): Promise<Buffer> {
-    const tmpPath = "__memory__.xlsx";
-    // Reutiliza a lógica existente escrevendo para stream em memória
-    const workbook = new ExcelJS.Workbook();
-    // Aproveitar código existente: para evitar duplicar, poderíamos refatorar; aqui copiamos a lógica essencial
-    // Simplicidade: reaproveitar convertRubricasToExcel adaptando para buffer exigiria extrair função interna.
-    // Para manter o patch pequeno, chamamos convertRubricasToExcel e depois lemos o arquivo – mas evitar IO real.
-    // Melhor: duplicar parte mínima de geração (sem logs) focando em dados atuais.
-    // TODO: Refatorar futuramente para DRY.
-    await this.convertRubricasToExcel(data, tmpPath);
-    const buffer = fs.readFileSync(tmpPath);
-    fs.unlinkSync(tmpPath);
-    return buffer;
+  static async convertRubricasToExcelBuffer(data: RubricaData[]): Promise<Buffer> {
+    const workbook = await this.buildWorkbookFromData(data);
+    const buffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(buffer);
   }
 
   static deleteFile(filePath: string): void {
@@ -858,10 +730,10 @@ export class PdfService {
    * @param filePath - Path to the PDF file.
    * @returns An array of unique years found in the PDF.
    */
-  static async extractYearsFromPdf(filePath: string): Promise<number[]> {
+  static async extractYearsFromPdf(file: string | Buffer): Promise<number[]> {
     try {
-      const dataBuffer = fs.readFileSync(filePath);
-      const data = await pdf(dataBuffer);
+      const dataBuffer = typeof file === 'string' ? fs.readFileSync(file) : file;
+      const data = await pdf(dataBuffer as Buffer);
       const text = data.text;
 
       // Regular expression to match years (e.g., 2020, 2021, etc.)
