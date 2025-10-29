@@ -1,6 +1,6 @@
 import { useState } from "react";
 import axios from "axios";
-
+import api from "../services/api";
 type UploadProps = {
   embedded?: boolean; // render sem wrapper de página
   multiple?: boolean; // permitir múltiplos arquivos
@@ -62,8 +62,8 @@ export function Upload({
     try {
       const endpoint =
         files.length === 1
-          ? "http://localhost:5000/api/pdf/upload"
-          : "http://localhost:5000/api/pdf/upload-multiple";
+          ? `${api.defaults.baseURL}/pdf/upload`
+          : `${api.defaults.baseURL}/pdf/upload-multiple`;
 
       const response = await axios.post(endpoint, formData, {
         headers: { "Content-Type": "multipart/form-data" },

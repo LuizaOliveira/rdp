@@ -1,10 +1,7 @@
 import axios from 'axios';
 
-// usa VITE_BASE_URL do .env (via Vite) ou fallback para desenvolvimento local
-const baseURL = (import.meta.env.VITE_BASE_URL as string) || 'http://localhost:5000/api';
-
 const api = axios.create({
-  baseURL,
+  baseURL: 'https://back-rdp-production.up.railway.app/api',
   headers: {
     'Content-Type': 'application/json'
   }
