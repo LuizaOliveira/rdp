@@ -1,0 +1,231 @@
+import { useState } from 'react';
+import axios from 'axios';
+
+export function PdfUpload() {
+  const [files, setFiles] = useState<File[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [lastDownloadedName, setLastDownloadedName] = useState('');
+
+  const validatePdf = (file: File) => file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files) return;
+    const selected = Array.from(e.target.files);
+    const invalid = selected.filter(f => !validatePdf(f));
+    if (invalid.length) {
+      setError(`Arquivos inválidos: ${invalid.map(f => f.name).join(', ')}`);
+      return;
+    }
+    setFiles(selected);
+    setError('');
+    setMessage('');
+    setLastDownloadedName('');
+  };
+
+  const triggerDownload = (blob: Blob, suggestedName?: string) => {
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = suggestedName || 'resultado.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+    setLastDownloadedName(a.download);
+  };
+
+  const handleUpload = async () => {
+    if (!files.length) {
+      setError('Por favor, selecione pelo menos um PDF');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    setMessage('');
+    setLastDownloadedName('');
+
+    const formData = new FormData();
+    if (files.length === 1) {
+      formData.append('file', files[0]);
+    } else {
+      files.forEach(f => formData.append('files', f));
+    }
+
+    try {
+      const endpoint = files.length === 1
+        ? 'http://localhost:5000/api/pdf/upload'
+        : 'http://localhost:5000/api/pdf/upload-multiple';
+
+      const response = await axios.post(endpoint, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        responseType: 'blob'
+      });
+
+      // Tenta extrair nome sugerido do header Content-Disposition
+      const disposition = response.headers['content-disposition'];
+      let suggestedName: string | undefined = undefined;
+      if (disposition) {
+        const match = /filename="?([^";]+)"?/i.exec(disposition);
+        if (match) suggestedName = match[1];
+      }
+
+    // Do NOT auto-download. Store suggested filename so user can request download from backend.
+    setLastDownloadedName(suggestedName || 'resultado.xlsx');
+    setMessage('Excel gerado com sucesso. Clique em Baixar para baixar o arquivo a partir do servidor.');
+    } catch (err: any) {
+      const msg = err.response?.data?.error || 'Erro ao processar arquivo(s)';
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 py-12 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-2xl mx-auto">
+        <div className="bg-white rounded-lg shadow-xl p-8">
+          {/* Header */}
+          <div className="text-center mb-8">
+            <h4 className="text-3xl font-bold text-gray-900 mb-2">
+              📄 PDF para Excel
+            </h4>
+            <p className="text-gray-600">
+              Faça upload do PDF com dados de folha de pagamento e baixe o Excel consolidado
+            </p>
+          </div>
+
+          {/* Upload Area */}
+          <div className="mb-6">
+            <label
+              htmlFor="file-upload"
+              className="flex flex-col items-center justify-center w-full h-64 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors"
+            >
+              <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                <svg
+                  className="w-16 h-16 mb-4 text-gray-400"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                  />
+                </svg>
+                {files.length ? (
+                  <div className="text-center max-w-xs">
+                    <p className="mb-2 text-sm text-gray-700 font-semibold">
+                      {files.length === 1 ? `📎 ${files[0].name}` : `${files.length} arquivos selecionados`}
+                    </p>
+                    <ul className="text-xs text-gray-500 max-h-24 overflow-auto space-y-1">
+                      {files.slice(0,5).map(f => (
+                        <li key={f.name}>{f.name}</li>
+                      ))}
+                      {files.length > 5 && (
+                        <li>... (+{files.length - 5} outros)</li>
+                      )}
+                    </ul>
+                  </div>
+                ) : (
+                  <div className="text-center">
+                    <p className="mb-2 text-sm text-gray-700">
+                      <span className="font-semibold">Clique para selecionar</span> ou arraste os arquivos
+                    </p>
+                    <p className="text-xs text-gray-500">Apenas PDFs (máx. 10MB cada)</p>
+                  </div>
+                )}
+              </div>
+              <input
+                id="file-upload"
+                type="file"
+                className="hidden"
+                accept=".pdf"
+                multiple
+                onChange={handleFileChange}
+              />
+            </label>
+          </div>
+
+          {/* Upload Button */}
+          <button
+            onClick={handleUpload}
+            disabled={!files.length || loading}
+            className={`w-full py-3 px-4 rounded-lg font-semibold text-white transition-all ${
+              !files.length || loading
+                ? 'bg-gray-400 cursor-not-allowed'
+                : 'bg-blue-600 hover:bg-blue-700 active:scale-95'
+            }`}
+          >
+            {loading ? (
+              <span className="flex items-center justify-center">
+                <svg
+                  className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  ></circle>
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  ></path>
+                </svg>
+                Gerando Excel...
+              </span>
+            ) : (
+              (files.length > 1 ? '🚀 Converter PDFs para Excel único' : '🚀 Converter para Excel')
+            )}
+          </button>
+
+          {/* Messages */}
+          {error && (
+            <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-sm text-red-800">❌ {error}</p>
+            </div>
+          )}
+          {message && (
+            <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg">
+              <p className="text-sm text-green-800">✅ {message}</p>
+              {lastDownloadedName && (
+                <p className="mt-2 text-xs text-green-700 break-all">Arquivo: {lastDownloadedName}</p>
+              )}
+              {lastDownloadedName && (
+                <div className="mt-3">
+                  <button
+                    onClick={async () => {
+                      try {
+                        const resp = await axios.get(`http://localhost:5000/api/pdf/download/${encodeURIComponent(lastDownloadedName)}`, { responseType: 'blob' });
+                        triggerDownload(resp.data, lastDownloadedName);
+                      } catch (err) {
+                        console.error('Erro ao baixar do servidor:', err);
+                        window.alert('Falha ao baixar arquivo do servidor. Veja o console para detalhes.');
+                      }
+                    }}
+                    className="px-3 py-1 bg-[#1A16F3] text-white rounded text-sm"
+                  >
+                    Baixar
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Info Section (opcional futuro) */}
+      </div>
+    </div>
+  );
+}
