@@ -10,7 +10,7 @@ const app = express();
 app.use(cors({ 
   origin: (origin, callback) => {
     // Permitir requisições sem origin (como Postman) e qualquer localhost
-    if (!origin || origin.startsWith('http://localhost:')) {
+    if (!origin || origin.startsWith('http://localhost:') || origin.includes('front-rdp-production.up.railway.app')) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
