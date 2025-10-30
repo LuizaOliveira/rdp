@@ -16,7 +16,7 @@ export function Upload({
   onUploadComplete,
 }: UploadProps) {
   const [files, setFiles] = useState<File[]>([]);
-  const [tipoServidor, setTipoServidor] = useState<'ativo' | 'aposentado'>('ativo');
+  const [tipoServidor, _setTipoServidor] = useState<'ativo' | 'aposentado'>('ativo');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
