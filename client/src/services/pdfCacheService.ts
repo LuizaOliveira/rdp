@@ -68,11 +68,32 @@ export const pdfCacheService = {
       responseType: 'blob',
     });
     // Try to obtain filename from headers, fallback to cpf
-    const disposition = res.headers['content-disposition'] as string | undefined;
+    const disposition = (res.headers as any)['content-disposition'] as string | undefined;
     let fileName = `${cpf}.xlsx`;
     if (disposition) {
       const m = /filename\s*=\s*"?([^";]+)"?/i.exec(disposition);
       if (m) fileName = m[1];
+    } else {
+      // If server didn't set a filename, try to get the cached user's name and use it
+      try {
+        const detailRes = await api.get(`/pdf/data-cache/users/${encodeURIComponent(cpf)}`);
+        const user = (detailRes.data && detailRes.data.data) ? detailRes.data.data : null;
+        if (user && user.name) {
+          // sanitize name to a safe filename
+          const sanitize = (input: string) =>
+            input
+              .normalize('NFD')
+              .replace(/[\u0300-\u036f]/g, '')
+              .replace(/[^a-zA-Z0-9\-_. ]/g, '')
+              .trim()
+              .replace(/\s+/g, '_')
+              .substring(0, 120);
+          const base = sanitize(user.name) || cpf;
+          fileName = `${base}.xlsx`;
+        }
+      } catch (e) {
+        // ignore and fallback to cpf
+      }
     }
     const blob = new Blob([res.data], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

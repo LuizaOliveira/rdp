@@ -599,6 +599,13 @@ export class PdfService {
     ];
     function getAliquotaFaixa(valor: number, ano: string) {
       const anoNum = Number(ano);
+
+      // Special-case: year 2020 uses a flat 11% on the total (do not consult the tabela)
+      // This mirrors the UI logic so both front and back produce the same desconto for 2020.
+      if (anoNum === 2020) {
+        return { De: null, Ate: null, percentual: 0.11, deduzir: null } as any;
+      }
+
       const tabelaAno = (tabelas as any).find((t: any) => t[anoNum]);
       if (!tabelaAno) return null;
       const faixas = (tabelaAno as any)[anoNum][0];
@@ -633,23 +640,40 @@ export class PdfService {
         cell.alignment = { vertical: 'middle' };
       });
 
-      const entradaDoMes2 = Object.entries(agrupado).find(([k]) => this.formatarMesAno(k) === mesData.mesAno);
-      let totalVantagens = 0;
-      if (entradaDoMes2) {
-        const [, mapaRubricas] = entradaDoMes2;
-        Object.entries(mapaRubricas).forEach(([rubrica, mapaDir]) => {
-          if (["VENC. BASE","ADTS","FUNÇÃO GRATIFICADA","INSALUBRIDADE","GRATIF. JORNADA ESPECIAL","ADD NOTURNO","GRATIFICAÇÃO NATALINA","ADIANTAMENTO GRATIFICAÇÃO NATALINA"].includes(rubrica)) {
-            Array.from(mapaDir.values()).forEach((ag) => { totalVantagens += ag.total; });
-          }
-        });
+      // Compute adjusted total of vantagens for previdência using the ORIGINAL data
+      // to mirror the client-side logic: exclude 'ADICIONAL DE FÉRIAS', 'FUNÇÃO GRATIFICADA'
+      // and any rubrica containing 'judicial' except the exact phrase 'VENCIMENTO POR DECISAO JUDICIAL'.
+      let totalVantagensAjustada = 0;
+      for (const item of data) {
+        // determine the reference month for the item (same logic used when grouping)
+        const mesPagamento = item.mesAno;
+        const mesReferencia = item.mesAnoDir && item.mesAnoDir !== mesPagamento ? item.mesAnoDir : mesPagamento;
+        const mesReferenciaFmt = this.formatarMesAno(mesReferencia);
+        // Only consider items that belong to the current mesData (reference)
+        if (mesReferenciaFmt !== mesData.mesAno) continue;
+        // Only advantages (positive values)
+        if (typeof item.valor !== 'number' || item.valor <= 0) continue;
+        // Exclude items that were paid in a different month (paidMonthYear !== monthYear)
+        if (mesPagamento !== mesReferencia) continue;
+
+        // Map and normalize the rubrica name similar to client
+        const nomeMapeado = this.mapearRubrica(item.descricaoRubrica);
+        const lower = (nomeMapeado || '').toLowerCase().trim();
+        const normalized = lower.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const allowedJudicial = normalized === 'vencimento por decisao judicial';
+        const isJudicial = /\bjudicial\b/.test(normalized) && !allowedJudicial;
+        if (nomeMapeado === 'ADICIONAL DE FÉRIAS' || nomeMapeado === 'FUNÇÃO GRATIFICADA' || isJudicial) continue;
+
+        totalVantagensAjustada += item.valor;
       }
+
       const anoMatch = mesData.mesAno.match(/\/(\d{2})$/);
-      let ano = "2025";
-      if (anoMatch) ano = "20" + anoMatch[1];
-      const faixa = getAliquotaFaixa(totalVantagens, ano);
+      let ano = '2025';
+      if (anoMatch) ano = '20' + anoMatch[1];
+      const faixa = getAliquotaFaixa(totalVantagensAjustada, ano);
       let desconto = 0;
-      if (faixa && typeof faixa.percentual === "number") {
-        desconto = totalVantagens * faixa.percentual;
+      if (faixa && typeof faixa.percentual === 'number') {
+        desconto = totalVantagensAjustada * faixa.percentual;
         if (faixa.deduzir) desconto -= faixa.deduzir;
       }
       const descontoFmt = desconto ? desconto.toFixed(2).replace('.', ',') : "";

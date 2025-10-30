@@ -217,6 +217,13 @@ export default function Home() {
     [selectedYear]
   );
 
+  // Precompute cutoff (today minus 5 years) used to determine prescription-excluded months
+  const cutoff = useMemo(() => {
+    const now = new Date();
+    const c = new Date(now.getFullYear() - 5, now.getMonth(), now.getDate());
+    return { year: c.getFullYear(), month: c.getMonth() + 1 };
+  }, []);
+
   // Filtra vantagens/desvantagens do ano selecionado
   const advantagesOfYear = useMemo(
     () =>
@@ -287,19 +294,25 @@ export default function Home() {
   // Função para buscar faixa de alíquota pelo valor e ano
   function getAliquotaFaixa(valor: number, ano: string) {
   const anoNum = Number(ano);
+
+  // Special-case: year 2020 uses a flat 11% on the adjusted total (do not consult tabelas)
+  if (anoNum === 2020) {
+    return { De: null, Ate: null, percentual: 0.11, deduzir: null } as any;
+  }
+
   const tabelaAno = tabelas.find((t) => Object.prototype.hasOwnProperty.call(t, anoNum));
   if (!tabelaAno) return null;
   const faixas = tabelaAno[anoNum as keyof typeof tabelaAno][0];
-    for (const key in faixas) {
-      const faixa = (faixas as Record<string, typeof faixas[keyof typeof faixas]>)[key];
-      if (
-        (faixa.De === null || valor >= faixa.De) &&
-        (faixa.Ate === null || valor <= faixa.Ate)
-      ) {
-        return faixa;
-      }
+  for (const key in faixas) {
+    const faixa = (faixas as Record<string, typeof faixas[keyof typeof faixas]>)[key];
+    if (
+      (faixa.De === null || valor >= faixa.De) &&
+      (faixa.Ate === null || valor <= faixa.Ate)
+    ) {
+      return faixa;
     }
-    return null;
+  }
+  return null;
   }
 
   const generalData = useMemo(() => {
@@ -479,14 +492,15 @@ export default function Home() {
 
   // Render a currency cell. If value is negative, show the absolute value in red
   // (the user requested discounts be shown in red instead of with a '-' sign).
-  const renderCurrencyCell = (v?: number | null) => {
+  const renderCurrencyCell = (v?: number | null, subdued: boolean = false) => {
     if (v === null) return "-";
+    // negative values shown as absolute but red; use a faded red when subdued
     if (typeof v === "number" && v < 0) {
-      // show absolute value but styled red
-      return (
-        <span className="text-red-600">{formatBRL(Math.abs(v))}</span>
-      );
+      const redClass = subdued ? "text-red-400" : "text-red-600";
+      return <span className={redClass}>{formatBRL(Math.abs(v))}</span>;
     }
+    // for subdued (prescription-excluded) positive/zero values, show them muted
+    if (subdued) return <span className="text-gray-400">{formatBRL(v as number | undefined)}</span>;
     return formatBRL(v as number | undefined);
   };
 
@@ -494,36 +508,30 @@ export default function Home() {
 
   // Soma da Diferença para os anos encontrados no PDF (independe do ano selecionado)
   const totalDiferencaAnosEncontrados = useMemo(() => {
-    // Build a per-year total of 'Diferença' (sum of months per year), then sum those yearly totals.
-    // This ensures we sum year-differences (2025 + 2024 + 2023 ...), not any per-month grouping bug.
-    const yearsToConsider: number[] = [];
-    if (extractedYears && extractedYears.length > 0) {
-      for (const y of extractedYears) {
-        const n = Number(y);
-        if (!isNaN(n)) yearsToConsider.push(n);
-      }
-    } else {
-      // fallback: collect years from the allGeneralData keys
-      for (const m of Array.from(allGeneralData.keys())) {
-        const ano = Number(m.split("/")[1]);
-        if (!isNaN(ano) && !yearsToConsider.includes(ano)) yearsToConsider.push(ano);
-      }
-    }
+    // Only consider months within the last 5 years (prescription window).
+    // Example: if today is Oct 30, 2025, cutoff is Oct 2020 — include Oct..Dec 2020 and all months after.
+    const now = new Date();
+    const cutoff = new Date(now.getFullYear() - 5, now.getMonth(), now.getDate());
+    const cutoffYear = cutoff.getFullYear();
+    const cutoffMonth = cutoff.getMonth() + 1; // 1-based month
 
     const yearlyTotals = new Map<number, number>();
     for (const m of Array.from(allGeneralData.keys())) {
-      const ano = Number(m.split("/")[1]);
-      if (!yearsToConsider.includes(ano)) continue;
-      const row = allGeneralData.get(m);
-      const val = row && typeof row["Diferença"] === "number" ? (row["Diferença"] as number) : 0;
-      yearlyTotals.set(ano, (yearlyTotals.get(ano) || 0) + val);
+      const parts = m.split('/').map((p) => Number(p));
+      if (parts.length !== 2) continue;
+      const [mm, yyyy] = parts;
+      if (isNaN(mm) || isNaN(yyyy)) continue;
+      // include month if it's after cutoff (strictly greater year) or same year and month >= cutoffMonth
+      if (yyyy > cutoffYear || (yyyy === cutoffYear && mm >= cutoffMonth)) {
+        const row = allGeneralData.get(m);
+        const val = row && typeof row['Diferença'] === 'number' ? (row['Diferença'] as number) : 0;
+        yearlyTotals.set(yyyy, (yearlyTotals.get(yyyy) || 0) + val);
+      }
     }
 
-    let grandTotal = 0;
-    for (const v of yearlyTotals.values()) {
-      grandTotal += v;
-    }
-    return grandTotal;
+    let total = 0;
+    for (const v of yearlyTotals.values()) total += v;
+    return total;
   }, [allGeneralData, extractedYears]);
 
   // Soma da Diferença para o ano atualmente selecionado (usada em IPE devido)
@@ -543,7 +551,7 @@ export default function Home() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-100 p-6">
         <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl mx-4 p-8 flex flex-col items-center">
-          <h2 className="text-gray-800 text-2xl font-bold mb-4">Upload de PDF</h2>
+          {/* <h2 className="text-gray-800 text-2xl font-bold mb-4">Upload de PDF</h2> */}
           <div className="w-full">
             <Upload
               embedded
@@ -780,17 +788,25 @@ export default function Home() {
                       cachedCpf &&
                       <>
                         {months.map((m) => {
+                          // determine if this month falls outside the 5-year cutoff (prescription)
+                          const [mmStr, yyStr] = m.split('/');
+                          const mmNum = Number(mmStr);
+                          const yyNum = Number(yyStr);
+                          const isExcludedByPrescription =
+                            !isNaN(mmNum) && !isNaN(yyNum) && (yyNum < cutoff.year || (yyNum === cutoff.year && mmNum < cutoff.month));
+
                           if (viewMode === "general") {
                             const row = generalData.get(m);
+                            const trClass = `h-12 border-b last:border-b-0 ${isExcludedByPrescription ? 'bg-gray-50 text-gray-400' : 'hover:bg-gray-50'}`;
                             return (
                               <tr
                                 key={m}
-                                className="h-12 border-b last:border-b-0 hover:bg-gray-50"
+                                className={trClass}
                               >
                                 <td className="py-3 px-4">{m}</td>
                                 {generalCols.map((col) => (
                                   <td key={col} className="py-3 px-4">
-                                    {renderCurrencyCell(row ? row[col] : 0)}
+                                    {renderCurrencyCell(row ? row[col] : 0, isExcludedByPrescription)}
                                   </td>
                                 ))}
                               </tr>
@@ -828,15 +844,16 @@ export default function Home() {
                             }
                           }
 
+                          const trClassOther = `h-12 border-b last:border-b-0 ${isExcludedByPrescription ? 'bg-gray-50 text-gray-400' : ''}`;
                           return (
                             <tr
                               key={m}
-                              className="h-12 border-b last:border-b-0"
+                              className={trClassOther}
                             >
                               <td className="pr-6">{m}</td>
                               {uniqueCols.map((col) => (
                                 <td key={col} className="pr-6">
-                                  {renderCurrencyCell(values.get(col))}
+                                  {renderCurrencyCell(values.get(col), isExcludedByPrescription)}
                                 </td>
                               ))}
                             </tr>

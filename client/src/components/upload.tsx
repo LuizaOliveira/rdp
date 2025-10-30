@@ -107,7 +107,7 @@ export function Upload({
 
       {/* Tipo de Servidor */}
       <div className="mb-4">
-        <div className="text-sm font-medium text-gray-700 mb-2">Tipo de servidor</div>
+        {/* <div className="text-sm font-medium text-gray-700 mb-2">Tipo de servidor</div>
         <div className="flex items-center gap-6">
           <label className="inline-flex items-center gap-2 cursor-pointer">
             <input
@@ -129,7 +129,7 @@ export function Upload({
             />
             <span className="text-sm text-gray-700">Aposentado</span>
           </label>
-        </div>
+        </div> */}
       </div>
 
       {/* Upload Area */}
