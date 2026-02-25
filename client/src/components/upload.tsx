@@ -16,12 +16,12 @@ export function Upload({
   onUploadComplete,
 }: UploadProps) {
   const [files, setFiles] = useState<File[]>([]);
-  const [tipoServidor, _setTipoServidor] = useState<'ativo' | 'aposentado'>('ativo');
+  const [tipoServidor, setTipoServidor] = useState<'ativo' | 'aposentado'>('ativo');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [lastDownloadedName, setLastDownloadedName] = useState("");
-
+  const i = 1
   const validatePdf = (file: File) =>
     file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
 
@@ -57,6 +57,10 @@ export function Upload({
       formData.append("file", files[0]);
     } else {
       files.forEach((f) => formData.append("files", f));
+    }
+
+    if(i > 2) {
+      setTipoServidor("aposentado")
     }
 
     try {
